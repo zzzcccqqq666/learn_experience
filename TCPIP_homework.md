@@ -222,3 +222,138 @@ d.MSG\_OOB无法脱离TCP的默认数据传输方式。即使设置了MSG\_OOB�
 - 边缘触发中输入缓冲收到数据时仅注册一次该事件。
 - 即使输入缓冲收到数据（注册相应事件），服务器端也能决定读取和处理这些数据端时间点，这样就给服务端端的实现带来巨大的灵活性。 
 
+
+
+## 18章
+### 1.单CPU系统中如何同时执行多个进程？请解释该过程中发生的上下文切换。
+- 系统将CPU时间分成多个微小的块后分配给了多个进程。
+- 运行程序前需要将相应进程信息读入内存，如果运行进程A后需要紧接着运行进程B，就应该将进程A相关信息移出内存，并读入进程B相关信息。这就是上下文切换。
+
+### 2.为何线程的上下文切换速度更快？线程间数据交换为何不需要类似IPC的特别技术？
+- 线程上下文切换时不需要切换数据区和堆。
+- 同一进程内的线程可以利用数据区和堆交换数据。
+
+### 3.请从执行流角度说明进程和线程的区别。
+- 进程：在操作系统构成单独执行流的单位。
+- 线程：在进程构成单独执行流的单位。
+- 进程在操作系统内部生成多个执行流，线程在同一进程内部创建多条执行流。
+
+### 下列关于临界区的说法错误的是？
+#### a.临界区是多个线程同时访问时发生问题的区域。
+错误，临界区是函数内同时运行多个线程时引起问题的多条语句构成的代码块。
+### b.线程安全的函数中不存在临界区，即便多个线程同时调用也不会发生问题。
+错误，线程安全函数中可能存在临界区。在线程安全函数中，同时被多个线程调用时可通过一些措施避免问题。
+#### c.1个临界区只能由1个代码块，而非多个代码块构成。换言之，线程A执行的代码块A和线程B执行的代码块B之间不会构成临界区。
+错误，如果代码块A和代码块B访问同一内存空间，在由不同线程同时执行时，也有可能构成临界区。
+#### d.临界区由访问全局变量的代码构成。其他变量不会发生问题。
+错误，访问堆中变量的代码也有可能构成临界区。
+
+### 5.下列关于线程同步的描述错误的是？
+#### a.线程同步就是限制访问临界区。
+错误，限制访问临界区是同时访问同一内存空间发生的情况。线程同步还有需要指定访问同一内存空间的线程执行顺序的情况。
+#### b.线程同步也具有控制线程执行顺序的含义。
+正确
+#### c.互斥量和信号量是典型的同步技术。
+正确
+#### d.线程同步是代替进程IPC的技术。
+错误，进程IPC是进程间通信技术，线程同步用于解决线程访问顺序引发的问题。
+
+### 6.请说明完全销毁Linux线程的2种方法。
+- 调用pthread_join函数：等待线程终止，引导线程销毁。线程终止前，调用该函数的线程将进入阻塞状态。
+- 调用pthread_detach函数：不会引起线程终止或进入阻塞状态，引导销毁线程创建的内存空间。
+
+### 7.请利用多线程技术实现回声服务器端，但要让所有线程共享保存客户端消息的内存空间（char数组）。这么做只是为了应用本章的同步技术，其实不符合常理。
+```
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
+#define BUF_SIZE 100
+#define CLNT_SIZE 256
+
+void *handle_clnt(void *arg);
+void *send_msg(char *msg, int len);
+void error_handling(const char *msg);
+
+pthread_mutex_t mutex;
+char buf[BUF_SIZE];
+
+int main(int argc, char *argv[])
+{
+    int serv_sock, clnt_sock;
+    struct sockaddr_in serv_addr, clnt_addr;
+    socklen_t clnt_addr_sz;
+
+    if (argc != 2)
+    {
+        printf("Usage: %s <port>\n", argv[0]);
+        exit(1);
+    }
+
+    serv_sock = socket(PF_INET, SOCK_STREAM, 0);
+    memset(&serv_addr, 0, sizeof(serv_addr));
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    serv_addr.sin_port = htons(atoi(argv[1]));
+
+    if (bind(serv_sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) == -1)
+        error_handling("bind() error");
+
+    if (listen(serv_sock, 5) == -1)
+        error_handling("listen() error");
+
+    pthread_t tid;
+    pthread_mutex_init(&mutex, NULL);
+    while (1)
+    {
+        clnt_addr_sz = sizeof(&clnt_addr);
+        clnt_sock = accept(serv_sock, (struct sockaddr *)&clnt_addr, &clnt_addr_sz);
+
+        pthread_create(&tid, NULL, handle_clnt, (void *)&clnt_sock);
+        pthread_detach(tid);
+        printf("connected client IP: %s\n", inet_ntoa(clnt_addr.sin_addr));
+    }
+    close(serv_sock);
+    pthread_mutex_destroy(&mutex);
+    return 0;
+}
+
+void *handle_clnt(void *arg)
+{
+    int clnt_sock = *(int *)arg;
+    int str_len = 0;
+
+    while (1)
+    {
+        pthread_mutex_lock(&mutex);
+        str_len = read(clnt_sock, buf, BUF_SIZE);
+        if (str_len <= 0)
+        {
+            pthread_mutex_unlock(&mutex);
+            break;
+        }
+        write(clnt_sock, buf, str_len);
+        pthread_mutex_unlock(&mutex);
+    }
+
+    close(clnt_sock);
+    return NULL;
+}
+
+
+void error_handling(const char *msg)
+{
+    fputs(msg, stderr);
+    fputc('\n', stderr);
+    exit(1);
+}
+
+```
+
+### 8.上一题要求所有线程共享保存回声消息的内存空间，如果采用这种方式，无论是否同步都会产生问题。请说明每种情况各产生哪些问题。
+- 同步：使用互斥量同步后，如果同时连接多个客户端，创建多个线程，因为同步的关系，同一时刻只有一个线程能拿到互斥量，其他线程会被阻塞。只有一个客户端处理完了，释放掉互斥量，下一个客户端的请求才能被处理。
+- 不同步，同时连接多个客户端，可能导致一个客户端的数据接收后还没得及发送，保存回声消息的内存空间就被另一个客户端的数据覆盖了，导致发送了错误的数据。
